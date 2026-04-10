@@ -1,7 +1,7 @@
 
 import { User, Ticket, BookingState, Complaint, Driver, UserRole } from '../types';
 import { db } from './db';
-import { BUS_PRICES } from '../constants';
+import { BUS_PRICES } from '../constants.tsx';
 
 const delay = (ms: number) => new Promise(res => setTimeout(res, ms));
 

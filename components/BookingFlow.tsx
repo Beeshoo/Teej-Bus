@@ -128,24 +128,46 @@ const BookingFlow: React.FC<BookingFlowProps> = ({ onComplete, userId }) => {
               <p className="text-sm md:text-gray-400 mt-2 font-medium">مواعيد دقيقة لضمان راحتك</p>
             </div>
             <div className="grid grid-cols-1 gap-3 md:gap-4">
-               {TRIP_SCHEDULES.map(ts => (
-                 <div 
-                  key={ts.id} 
-                  onClick={() => setBooking({...booking, departureTime: ts.departureTime, arrivalTime: ts.arrivalTime})} 
-                  className={`p-4 md:p-6 border-2 rounded-2xl md:rounded-[2rem] cursor-pointer transition-all flex justify-between items-center group ${booking.departureTime === ts.departureTime ? 'bg-blue-50 border-blue-600 shadow-lg' : 'bg-white border-gray-100 hover:border-blue-200'}`}
-                 >
-                   <div className="flex items-center gap-4 md:gap-6">
-                      <div className={`w-10 h-10 md:w-14 md:h-14 rounded-xl md:rounded-2xl flex items-center justify-center text-xl md:text-2xl transition-all ${booking.departureTime === ts.departureTime ? 'bg-blue-900 text-white' : 'bg-gray-100 text-gray-400'}`}>
-                        {ts.departureTime.split(':')[0] >= '18' ? '🌙' : '☀️'}
-                      </div>
-                      <div>
-                        <p className="text-xl md:text-2xl font-black text-blue-900">{ts.label}</p>
-                        <p className="text-sm md:text-base text-gray-400 font-bold">وصول متوقع في تمام {ts.arrivalTime}</p>
-                      </div>
+               {(() => {
+                 const availableTrips = TRIP_SCHEDULES.filter(ts => {
+                   const today = new Date().toISOString().split('T')[0];
+                   if (booking.date === today) {
+                     const now = new Date();
+                     const currentTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+                     return ts.departureTime > currentTime;
+                   }
+                   return true;
+                 });
+
+                 if (availableTrips.length === 0) {
+                   return (
+                     <div className="text-center py-12 bg-gray-50 rounded-3xl border-2 border-dashed border-gray-200">
+                       <div className="text-5xl mb-4">⏳</div>
+                       <h4 className="text-xl font-black text-blue-900">عذراً، انتهت رحلات اليوم</h4>
+                       <p className="text-gray-400 font-bold mt-2">يرجى اختيار تاريخ آخر أو العودة غداً</p>
+                     </div>
+                   );
+                 }
+
+                 return availableTrips.map(ts => (
+                   <div 
+                    key={ts.id} 
+                    onClick={() => setBooking({...booking, departureTime: ts.departureTime, arrivalTime: ts.arrivalTime})} 
+                    className={`p-4 md:p-6 border-2 rounded-2xl md:rounded-[2rem] cursor-pointer transition-all flex justify-between items-center group ${booking.departureTime === ts.departureTime ? 'bg-blue-50 border-blue-600 shadow-lg' : 'bg-white border-gray-100 hover:border-blue-200'}`}
+                   >
+                     <div className="flex items-center gap-4 md:gap-6">
+                        <div className={`w-10 h-10 md:w-14 md:h-14 rounded-xl md:rounded-2xl flex items-center justify-center text-xl md:text-2xl transition-all ${booking.departureTime === ts.departureTime ? 'bg-blue-900 text-white' : 'bg-gray-100 text-gray-400'}`}>
+                          {ts.departureTime.split(':')[0] >= '18' ? '🌙' : '☀️'}
+                        </div>
+                        <div>
+                          <p className="text-xl md:text-2xl font-black text-blue-900">{ts.label}</p>
+                          <p className="text-sm md:text-base text-gray-400 font-bold">وصول متوقع في تمام {ts.arrivalTime}</p>
+                        </div>
+                     </div>
+                     <div className="text-xl md:text-2xl font-black text-blue-900">{ts.departureTime}</div>
                    </div>
-                   <div className="text-xl md:text-2xl font-black text-blue-900">{ts.departureTime}</div>
-                 </div>
-               ))}
+                 ));
+               })()}
             </div>
             <div className="flex gap-3 md:gap-4">
               <button onClick={handleBack} className="flex-1 bg-gray-100 py-4 md:py-5 rounded-xl md:rounded-2xl font-black text-gray-500 text-sm md:text-base">رجوع</button>
@@ -204,7 +226,7 @@ const BookingFlow: React.FC<BookingFlowProps> = ({ onComplete, userId }) => {
              {/* تصميم هيكل الحافلة */}
              <div className="relative inline-block mx-auto group/bus">
                {/* جسم الحافلة - تصميم عصري وأنيق */}
-               <div className="bg-slate-50 border-[6px] border-slate-200 rounded-[4rem] p-8 md:p-12 shadow-[0_20px_50px_rgba(0,0,0,0.1)] relative overflow-hidden">
+               <div className="bg-slate-50 border-[6px] border-slate-200 rounded-[3rem] md:rounded-[4rem] p-4 sm:p-8 md:p-12 shadow-[0_20px_50px_rgba(0,0,0,0.1)] relative overflow-hidden">
                  {/* تأثير الزجاج الأمامي */}
                  <div className="absolute top-0 left-0 w-full h-32 bg-gradient-to-b from-blue-100/30 to-transparent pointer-events-none"></div>
                  
@@ -220,11 +242,11 @@ const BookingFlow: React.FC<BookingFlowProps> = ({ onComplete, userId }) => {
                  </div>
 
                  {/* شبكة المقاعد مع الممر */}
-                 <div className="grid grid-cols-5 gap-y-6 md:gap-y-8">
+                 <div className="grid grid-cols-5 gap-x-2 sm:gap-x-4 md:gap-x-6 gap-y-4 md:gap-y-8">
                    {/* توليد 10 صفوف من المقاعد (إجمالي 40 مقعداً) */}
                    {Array.from({length: 10}, (_, row) => {
                      return [1, 2, 0, 3, 4].map((col, colIdx) => {
-                       if (col === 0) return <div key={`aisle-${row}`} className="w-6 md:w-10 flex items-center justify-center">
+                       if (col === 0) return <div key={`aisle-${row}`} className="w-4 sm:w-6 md:w-10 flex items-center justify-center">
                          <div className="w-0.5 h-full bg-slate-100/50 rounded-full"></div>
                        </div>; // الممر
                        
@@ -237,7 +259,7 @@ const BookingFlow: React.FC<BookingFlowProps> = ({ onComplete, userId }) => {
                            key={`seat-${seatNumber}`} 
                            disabled={isOccupied}
                            onClick={() => toggleSeat(seatNumber)} 
-                           className={`w-12 h-12 sm:w-14 sm:h-14 md:w-16 md:h-16 rounded-2xl border-2 font-black transition-all flex flex-col items-center justify-center text-xs md:text-sm relative
+                           className={`w-10 h-10 sm:w-14 sm:h-14 md:w-16 md:h-16 rounded-xl md:rounded-2xl border-2 font-black transition-all flex flex-col items-center justify-center text-[10px] md:text-sm relative
                              ${isOccupied ? 'bg-slate-100 border-slate-200 text-slate-300 cursor-not-allowed' : 
                                isSelected ? 'bg-blue-900 border-blue-900 text-white shadow-[0_10px_20px_rgba(30,58,138,0.3)] scale-110 z-10' : 'bg-white border-slate-200 text-slate-500 hover:border-blue-500 hover:text-blue-600 hover:shadow-lg'}`}
                          >
