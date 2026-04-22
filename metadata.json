@@ -1,5 +1,5 @@
 {
   "name": "نظام تاج باص",
   "description": "نظام متكامل لإدارة حجز الحافلات والرحلات البرية.",
-  "requestFramePermissions": []
+  "requestFramePermissions": ["camera"]
 }
