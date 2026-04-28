@@ -1,6 +1,6 @@
 
 import { User, Ticket, BookingState, Complaint, Driver, UserRole, ChatMessage } from '../types';
-import { supabase } from './supabaseClient';
+import { db } from './db';
 import { calculateTripPrice } from '../constants.tsx';
 
 const delay = (ms: number) => new Promise(res => setTimeout(res, ms));
@@ -8,576 +8,353 @@ const delay = (ms: number) => new Promise(res => setTimeout(res, ms));
 export const BackendAPI = {
   // --- نظام الدردشة المباشرة ---
   async sendChatMessage(message: Omit<ChatMessage, 'id' | 'timestamp'>): Promise<ChatMessage> {
-    const { data, error } = await supabase
-      .from('chat_messages')
-      .insert([{
-        user_id: message.userId,
-        user_name: message.userName,
-        sender: message.sender,
-        text_content: message.text,
-        is_read: false
-      }])
-      .select()
-      .single();
-
-    if (error) throw error;
-    return {
-      id: data.id,
-      userId: data.user_id,
-      userName: data.user_name,
-      sender: data.sender as 'user' | 'admin' | 'system',
-      text: data.text_content,
-      timestamp: data.timestamp,
-      isRead: data.is_read
+    const newMessage: ChatMessage = {
+      ...message,
+      timestamp: new Date().toISOString(),
+      isRead: false
     };
+    const id = await db.chatMessages.add(newMessage);
+    return { ...newMessage, id };
   },
 
   async getUserChatMessages(userId: string): Promise<ChatMessage[]> {
-    const { data, error } = await supabase
-      .from('chat_messages')
-      .select('*')
-      .eq('user_id', userId)
-      .order('timestamp', { ascending: true });
-
-    if (error) throw error;
-    return data.map(msg => ({
-      id: msg.id,
-      userId: msg.user_id,
-      userName: msg.user_name,
-      sender: msg.sender as 'user' | 'admin' | 'system',
-      text: msg.text_content,
-      timestamp: msg.timestamp,
-      isRead: msg.is_read
-    }));
+    return await db.chatMessages.where('userId').equals(userId).sortBy('timestamp');
   },
 
   async getAllChatMessages(): Promise<ChatMessage[]> {
-    const { data, error } = await supabase
-      .from('chat_messages')
-      .select('*')
-      .order('timestamp', { ascending: false });
-
-    if (error) throw error;
-    return data.map(msg => ({
-      id: msg.id,
-      userId: msg.user_id,
-      userName: msg.user_name,
-      sender: msg.sender as 'user' | 'admin' | 'system',
-      text: msg.text_content,
-      timestamp: msg.timestamp,
-      isRead: msg.is_read
-    }));
+    return await db.chatMessages.reverse().sortBy('timestamp');
   },
 
   async markChatAsRead(userId: string): Promise<void> {
-    const { error } = await supabase
-      .from('chat_messages')
-      .update({ is_read: true })
-      .eq('user_id', userId);
-    
-    if (error) throw error;
+    const messages = await db.chatMessages.where('userId').equals(userId).toArray();
+    for (const msg of messages) {
+      if (msg.id) {
+        await db.chatMessages.update(msg.id, { isRead: true });
+      }
+    }
   },
 
   // --- نظام الحسابات وإدارة الجلسات ---
+  // دالة إنشاء حساب جديد مع التحقق من البريد الإلكتروني وصلاحيات المدير
+  // يتم التحقق من وجود البريد مسبقاً لمنع التكرار
   async signup(userData: any): Promise<{ success: boolean; user?: User; message?: string }> {
-    await delay(800);
+    await delay(800); // محاكاة التأخير في طلبات الشبكة لجعل الواجهة تبدو واقعية
+    const existing = await db.users.where('email').equals(userData.email).first();
     
-    // التحقق من كود الأمان للمديرين
+    if (existing) {
+      return { success: false, message: 'هذا البريد الإلكتروني مسجل بالفعل' };
+    }
+
+    // إعداد كائن المستخدم الجديد
+    const newUser: User = {
+      id: Math.random().toString(36).substr(2, 9),
+      name: userData.name,
+      email: userData.email,
+      phone: userData.phone,
+      birthDate: userData.birthDate,
+      role: userData.role || UserRole.USER,
+      licenseNumber: userData.licenseNumber,
+      photoUrl: userData.photoUrl,
+      loggedIn: true
+    };
+
+    // حماية إضافية: التحقق من كود الأمان للمديرين لمنع أي شخص من جعل نفسه مديراً
     if (userData.role === UserRole.ADMIN) {
       if (userData.securityKey !== '2026') {
         return { success: false, message: 'كود تفعيل المدير غير صحيح' };
       }
     }
 
-    const newUser = {
-      id: Math.random().toString(36).substr(2, 9),
-      email: userData.email,
-      password: userData.password,
-      name: userData.name,
-      phone: userData.phone,
-      birth_date: userData.birthDate,
-      role: userData.role || UserRole.USER,
-      license_number: userData.licenseNumber,
-      photo_url: userData.photoUrl
-    };
-
-    const { data, error } = await supabase
-      .from('app_users')
-      .insert([newUser])
-      .select()
-      .single();
-
-    if (error) {
-      if (error.code === '23505') return { success: false, message: 'هذا البريد الإلكتروني مسجل بالفعل' };
-      return { success: false, message: error.message };
-    }
-
-    const sessionUser: User = {
-      id: data.id,
-      name: data.name,
-      email: data.email,
-      phone: data.phone,
-      birthDate: data.birth_date,
-      role: data.role as UserRole,
-      licenseNumber: data.license_number,
-      photoUrl: data.photo_url,
-      loggedIn: true
-    };
-
-    localStorage.setItem('taj_bus_current_session', JSON.stringify(sessionUser));
-    return { success: true, user: sessionUser };
+    // حفظ في قاعدة البيانات المحلية (Dexie) وحفظ الجلسة في localStorage
+    await db.users.add({ ...newUser, password: userData.password });
+    localStorage.setItem('taj_bus_current_session', JSON.stringify(newUser));
+    return { success: true, user: newUser };
   },
 
+  // دالة تسجيل الدخول والتحقق من كلمة المرور من قاعدة البيانات المحلية
   async login(email: string, pass: string): Promise<{ success: boolean; user?: User; message?: string }> {
     await delay(800);
-    const { data, error } = await supabase
-      .from('app_users')
-      .select('*')
-      .eq('email', email)
-      .eq('password', pass)
-      .single();
+    const user = await db.users.where('email').equals(email).first();
 
-    if (error || !data) {
-      return { success: false, message: 'بيانات الدخول غير صحيحة' };
+    if (user && user.password === pass) {
+      const { password, ...sessionUser } = user;
+      localStorage.setItem('taj_bus_current_session', JSON.stringify(sessionUser));
+      return { success: true, user: sessionUser as User };
     }
-
-    const sessionUser: User = {
-      id: data.id,
-      name: data.name,
-      email: data.email,
-      phone: data.phone,
-      birthDate: data.birth_date,
-      role: data.role as UserRole,
-      licenseNumber: data.license_number,
-      photoUrl: data.photo_url,
-      loggedIn: true
-    };
-
-    localStorage.setItem('taj_bus_current_session', JSON.stringify(sessionUser));
-    return { success: true, user: sessionUser };
+    return { success: false, message: 'بيانات الدخول غير صحيحة' };
   },
 
+  // تسجيل الخروج وحذف بيانات الجلسة من التخزين المحلي
   async logout() {
     localStorage.removeItem('taj_bus_current_session');
   },
 
+  // استعادة بيانات الجلسة الحالية عند فتح التطبيق
   async getSession(): Promise<User | null> {
     const session = localStorage.getItem('taj_bus_current_session');
     return session ? JSON.parse(session) : null;
   },
 
   async getUserById(id: string): Promise<User | null> {
-    const { data, error } = await supabase
-      .from('app_users')
-      .select('*')
-      .eq('id', id)
-      .single();
-    
-    if (error || !data) return null;
-    return {
-      id: data.id,
-      name: data.name,
-      email: data.email,
-      phone: data.phone,
-      birthDate: data.birth_date,
-      role: data.role as UserRole,
-      licenseNumber: data.license_number,
-      photoUrl: data.photo_url,
-      loggedIn: false
-    };
+    const user = await db.users.get(id);
+    return user || null;
   },
 
   async getTicketById(id: string): Promise<Ticket | null> {
-    const { data, error } = await supabase
-      .from('tickets')
-      .select('*')
-      .eq('id', id)
-      .single();
-    
-    if (error || !data) return null;
-    return {
-      ...data,
-      userId: data.user_id,
-      driverId: data.driver_id,
-      driverName: data.driver_name,
-      driverPhoto: data.driver_photo,
-      from: data.from_loc,
-      to: data.to_loc,
-      departureTime: data.departure_time,
-      busType: data.bus_type,
-      selectedSeats: data.selected_seats,
-      paymentId: data.payment_id,
-      paymentStatus: data.payment_status
-    };
+    const ticket = await db.tickets.get(id);
+    return ticket || null;
   },
 
   // --- نظام الحجز وإدارة المقاعد ---
+  // جلب المقاعد المحجوزة لرحلة معينة لمنع الحجز المزدوج
   async getOccupiedSeats(date: string, time: string, from: string, to: string): Promise<number[]> {
-    const { data, error } = await supabase
-      .from('tickets')
-      .select('selected_seats')
-      .eq('date', date)
-      .eq('departure_time', time)
-      .eq('from_loc', from)
-      .eq('to_loc', to)
-      .neq('status', 'cancelled');
+    const tickets = await db.tickets
+      .where('date').equals(date)
+      .and(t => t.departureTime === time && t.from === from && t.to === to && t.status !== 'cancelled')
+      .toArray();
     
-    if (error) return [];
-    return data.flatMap(t => t.selected_seats);
+    return tickets.flatMap(t => t.selectedSeats);
   },
 
+  // إنشاء حجز جديد وتوليد تذكرة بعد التأكد من توفر المقاعد
   async createBooking(bookingData: BookingState, userId: string): Promise<{ success: boolean; ticket?: Ticket }> {
     await delay(1200);
     
-    // فحص المقاعد
+    // عملية فحص المقاعد داخل قاعدة البيانات
     const occupied = await this.getOccupiedSeats(bookingData.date, bookingData.departureTime, bookingData.from, bookingData.to);
     const isTaken = bookingData.selectedSeats.some(s => occupied.includes(s));
     
     if (isTaken) {
-      throw new Error('تعارض: تم حجز هذه المقاعد للتو');
+      throw new Error('تعارض في قاعدة البيانات: تم حجز هذه المقاعد للتو');
     }
 
-    const price = (bookingData.selectedSeats.length) * calculateTripPrice(bookingData.from, bookingData.to, bookingData.busType);
-    const ticketId = 'TAJ-' + Math.random().toString(36).substr(2, 6).toUpperCase();
-
-    const { data, error } = await supabase
-      .from('tickets')
-      .insert([{
-        id: ticketId,
-        user_id: userId,
-        date: bookingData.date,
-        from_loc: bookingData.from,
-        to_loc: bookingData.to,
-        departure_time: bookingData.departureTime,
-        arrival_time: bookingData.arrivalTime,
-        bus_type: bookingData.busType,
-        selected_seats: bookingData.selectedSeats,
-        price,
-        status: 'upcoming',
-        payment_status: 'paid',
-        payment_id: 'PAY-' + Date.now()
-      }])
-      .select()
-      .single();
-
-    if (error) throw error;
-    
-    return { 
-      success: true, 
-      ticket: {
-        ...data,
-        userId: data.user_id,
-        from: data.from_loc,
-        to: data.to_loc,
-        departureTime: data.departure_time,
-        arrivalTime: data.arrival_time,
-        busType: data.bus_type as any,
-        selectedSeats: data.selected_seats,
-        paymentId: data.payment_id,
-        paymentStatus: data.payment_status
-      } as Ticket 
+    const newTicket: Ticket = {
+      id: 'TAJ-' + Math.random().toString(36).substr(2, 6).toUpperCase(),
+      userId,
+      ...bookingData,
+      price: (bookingData.selectedSeats.length) * calculateTripPrice(bookingData.from, bookingData.to, bookingData.busType),
+      status: 'upcoming',
+      paymentStatus: 'paid',
+      paymentId: 'PAY-' + Date.now()
     };
+
+    await db.tickets.add(newTicket);
+    return { success: true, ticket: newTicket };
   },
 
+  // جلب جميع تذاكر مستخدم معين لعرضها في سجل الرحلات
   async getUserTickets(userId: string): Promise<Ticket[]> {
-    const { data, error } = await supabase
-      .from('tickets')
-      .select('*')
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false });
-
-    if (error) return [];
-    return data.map(t => ({
-      ...t,
-      userId: t.user_id,
-      driverId: t.driver_id,
-      driverName: t.driver_name,
-      driverPhoto: t.driver_photo,
-      from: t.from_loc,
-      to: t.to_loc,
-      departureTime: t.departure_time,
-      busType: t.bus_type,
-      selectedSeats: t.selected_seats,
-      paymentId: t.payment_id,
-      paymentStatus: t.payment_status
-    }));
+    return await db.tickets.where('userId').equals(userId).reverse().toArray();
   },
 
   // --- نظام الشكاوي والمقترحات ---
+  // إرسال شكوى جديدة وحفظها في قاعدة البيانات بحالة "قيد الانتظار"
   async submitComplaint(complaintData: Omit<Complaint, 'id' | 'status' | 'createdAt'>): Promise<{ success: boolean; message: string }> {
     await delay(1000);
-    const { error } = await supabase
-      .from('complaints')
-      .insert([{
-        user_id: complaintData.userId,
-        user_name: complaintData.userName,
-        user_email: complaintData.userEmail,
-        ticket_id: complaintData.ticketId,
-        category: complaintData.category,
-        subject: complaintData.subject,
-        message: complaintData.message,
-        status: 'pending'
-      }]);
-
-    if (error) throw error;
+    const newComplaint: Complaint = {
+      ...complaintData,
+      status: 'pending',
+      createdAt: new Date().toISOString()
+    };
+    await db.complaints.add(newComplaint);
     return { success: true, message: 'تم إرسال شكواك بنجاح. سنقوم بالرد عليك في أقرب وقت.' };
   },
 
   async getUserComplaints(userId: string): Promise<Complaint[]> {
-    const { data, error } = await supabase
-      .from('complaints')
-      .select('*')
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false });
-
-    if (error) return [];
-    return data.map(c => ({
-      id: c.id,
-      userId: c.user_id,
-      userName: c.user_name,
-      userEmail: c.user_email,
-      ticketId: c.ticket_id,
-      category: c.category,
-      subject: c.subject,
-      message: c.message,
-      status: c.status,
-      createdAt: c.created_at,
-      adminReply: c.admin_reply,
-      repliedAt: c.replied_at
-    }));
+    return await db.complaints.where('userId').equals(userId).reverse().toArray();
   },
 
+  // جلب التذاكر المسندة لسائق معين لعرضها في لوحة تحكم السائق
   async getDriverTickets(driverId: string): Promise<Ticket[]> {
-    const { data, error } = await supabase
-      .from('tickets')
-      .select('*')
-      .eq('driver_id', driverId)
-      .order('created_at', { ascending: false });
-
-    if (error) return [];
-    return data.map(t => ({
-      ...t,
-      userId: t.user_id,
-      driverId: t.driver_id,
-      driverName: t.driver_name,
-      driverPhoto: t.driver_photo,
-      from: t.from_loc,
-      to: t.to_loc,
-      departureTime: t.departure_time,
-      busType: t.bus_type as any,
-      selectedSeats: t.selected_seats,
-      paymentId: t.payment_id,
-      paymentStatus: t.payment_status,
-      arrivalTime: t.arrival_time
-    }));
+    return await db.tickets.where('driverId').equals(driverId).reverse().toArray();
   },
 
   // --- نظام الإدارة والتحكم ---
+  // جلب كافة التذاكر في النظام (للمدير فقط)
   async getAllTickets(): Promise<Ticket[]> {
-    const { data, error } = await supabase
-      .from('tickets')
-      .select('*')
-      .order('created_at', { ascending: false });
-
-    if (error) return [];
-    return data.map(t => ({
-      ...t,
-      userId: t.user_id,
-      driverId: t.driver_id,
-      driverName: t.driver_name,
-      driverPhoto: t.driver_photo,
-      from: t.from_loc,
-      to: t.to_loc,
-      departureTime: t.departure_time,
-      busType: t.bus_type as any,
-      selectedSeats: t.selected_seats,
-      paymentId: t.payment_id,
-      paymentStatus: t.payment_status,
-      arrivalTime: t.arrival_time
-    }));
+    return await db.tickets.reverse().toArray();
   },
 
   async getAllComplaints(): Promise<Complaint[]> {
-    const { data, error } = await supabase
-      .from('complaints')
-      .select('*')
-      .order('created_at', { ascending: false });
-
-    if (error) return [];
-    return data.map(c => ({
-      id: c.id,
-      userId: c.user_id,
-      userName: c.user_name,
-      userEmail: c.user_email,
-      ticketId: c.ticket_id,
-      category: c.category,
-      subject: c.subject,
-      message: c.message,
-      status: c.status,
-      createdAt: c.created_at,
-      adminReply: c.admin_reply,
-      repliedAt: c.replied_at
-    }));
+    return await db.complaints.reverse().toArray();
   },
 
   async updateComplaintStatus(id: number, status: 'pending' | 'resolved' | 'ignored'): Promise<boolean> {
-    const { error } = await supabase
-      .from('complaints')
-      .update({ status })
-      .eq('id', id);
-    return !error;
+    await db.complaints.update(id, { status });
+    return true;
   },
 
   async replyToComplaint(id: number, adminReply: string): Promise<boolean> {
-    const { error } = await supabase
-      .from('complaints')
-      .update({ 
-        admin_reply: adminReply, 
-        replied_at: new Date().toISOString(),
-        status: 'resolved' 
-      })
-      .eq('id', id);
-    return !error;
+    await db.complaints.update(id, { 
+      adminReply, 
+      repliedAt: new Date().toISOString(),
+      status: 'resolved' 
+    });
+    return true;
   },
 
+  // جلب قائمة السائقين مع إضافة بيانات أولية في حال كانت القاعدة فارغة (Seed Data)
   async getDrivers(): Promise<Driver[]> {
-    const { data, error } = await supabase
-      .from('drivers')
-      .select('*')
-      .order('name');
-    
-    if (error) return [];
-    return data.map(d => ({
-      id: d.id,
-      name: d.name,
-      phone: d.phone,
-      licenseNumber: d.license_number,
-      status: d.status,
-      photoUrl: d.photo_url
-    }));
+    const drivers = await db.drivers.toArray();
+    if (drivers.length === 0) {
+      // إضافة سائقين افتراضيين لتجربة النظام لأول مرة
+      const initialDrivers: Driver[] = [
+        {
+          id: 'dr-1',
+          name: 'كابتن أحمد المنشاوي',
+          phone: '01012345678',
+          licenseNumber: 'L-998877',
+          status: 'active',
+          photoUrl: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=400&h=400&fit=crop'
+        },
+        {
+          id: 'dr-2',
+          name: 'كابتن محمد عبد العزيز',
+          phone: '01122334455',
+          licenseNumber: 'L-554433',
+          status: 'active',
+          photoUrl: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=400&h=400&fit=crop'
+        },
+        {
+          id: 'dr-3',
+          name: 'كابتن محمود الشافعي',
+          phone: '01233445566',
+          licenseNumber: 'L-112233',
+          status: 'active',
+          photoUrl: 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=400&h=400&fit=crop'
+        },
+        {
+          id: 'dr-4',
+          name: 'كابتن حسن البدري',
+          phone: '01555667788',
+          licenseNumber: 'L-776655',
+          status: 'active',
+          photoUrl: 'https://images.unsplash.com/photo-1519085360753-af0119f7cbe7?w=400&h=400&fit=crop'
+        },
+        {
+          id: 'dr-5',
+          name: 'كابتن ياسر الجندي',
+          phone: '01099887766',
+          licenseNumber: 'L-223344',
+          status: 'active',
+          photoUrl: 'https://images.unsplash.com/photo-1566492031773-4f4e44671857?w=400&h=400&fit=crop'
+        },
+        {
+          id: 'dr-6',
+          name: 'كابتن إبراهيم فوزي',
+          phone: '01144556677',
+          licenseNumber: 'L-665544',
+          status: 'active',
+          photoUrl: 'https://images.unsplash.com/photo-1542909168-82c3e7fdca5c?w=400&h=400&fit=crop'
+        },
+        {
+          id: 'dr-7',
+          name: 'كابتن سامح عبد الله',
+          phone: '01277889900',
+          licenseNumber: 'L-334455',
+          status: 'active',
+          photoUrl: 'https://images.unsplash.com/photo-1552058544-f2b08422138a?w=400&h=400&fit=crop'
+        },
+        {
+          id: 'dr-8',
+          name: 'كابتن علي حسن',
+          phone: '01011223344',
+          licenseNumber: 'L-445566',
+          status: 'active',
+          photoUrl: 'https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?w=400&h=400&fit=crop'
+        }
+      ];
+      await db.drivers.bulkAdd(initialDrivers);
+      return initialDrivers;
+    }
+    return drivers;
   },
 
   async addDriver(driver: Omit<Driver, 'id'>): Promise<Driver> {
     const id = Math.random().toString(36).substr(2, 9);
-    const newDriver = {
-      id,
-      name: driver.name,
-      phone: driver.phone,
-      license_number: driver.licenseNumber,
-      status: driver.status,
-      photo_url: driver.photoUrl
-    };
-    const { data, error } = await supabase
-      .from('drivers')
-      .insert([newDriver])
-      .select()
-      .single();
-
-    if (error) throw error;
-    return {
-      id: data.id,
-      name: data.name,
-      phone: data.phone,
-      licenseNumber: data.license_number,
-      status: data.status,
-      photoUrl: data.photo_url
-    };
+    const newDriver = { ...driver, id };
+    await db.drivers.add(newDriver);
+    return newDriver;
   },
 
   async deleteDriver(id: any): Promise<void> {
-    await supabase.from('drivers').delete().eq('id', id);
+    console.log('BackendAPI: جاري حذف السائق بالمعرف:', id);
+    // محاول الحذف بالمعرف كنص (string) وكعدد (number) لضمان التوافق مع Dexie auto-increment
+    await db.drivers.delete(id);
+    
+    const numericId = Number(id);
+    if (!isNaN(numericId)) {
+      await db.drivers.delete(numericId);
+    }
     
     // التحقق من جدول المستخدمين أيضاً
-    const { data: user } = await supabase
-      .from('app_users')
-      .select('*')
-      .eq('id', id)
-      .single();
+    const users = await db.users.toArray();
+    const user = users.find(u => String(u.id) === String(id));
     
     if (user && user.role === UserRole.DRIVER) {
-      await supabase.from('app_users').update({ role: UserRole.USER }).eq('id', id);
+      console.log('تم العثور على مستخدم بصلاحية سائق، جاري إرجاعه لمستخدم عادي:', user.id);
+      await db.users.update(user.id, { role: UserRole.USER });
     }
   },
 
+  // جلب بيانات سائق معين بواسطة المعرف الخاص به
   async getDriverById(id: string): Promise<Driver | null> {
-    const { data: driver } = await supabase
-      .from('drivers')
-      .select('*')
-      .eq('id', id)
-      .single();
-
-    if (driver) return {
-      id: driver.id,
-      name: driver.name,
-      phone: driver.phone,
-      licenseNumber: driver.license_number,
-      status: driver.status,
-      photoUrl: driver.photoUrl
-    };
+    const driver = await db.drivers.get(id);
+    if (driver) return driver;
     
-    const { data: user } = await supabase
-      .from('app_users')
-      .select('*')
-      .eq('id', id)
-      .single();
-
+    // البحث في جدول المستخدمين في حال كان السائق قد سجل بنفسه ولم يضفه المدير يدوياً
+    const user = await db.users.get(id);
     if (user && user.role === UserRole.DRIVER) {
       return {
         id: user.id,
         name: user.name,
         phone: user.phone,
-        licenseNumber: user.license_number || 'غير متوفر',
-        status: 'active',
-        photoUrl: user.photo_url
+        licenseNumber: user.licenseNumber || 'غير متوفر',
+        status: user.status || 'active',
+        photoUrl: user.photoUrl
       };
     }
     return null;
   },
 
+  // تقييم الرحلة بعد اكتمالها وإضافة تعليق المستخدم
   async rateTicket(ticketId: string, rating: number, review: string): Promise<boolean> {
-    const { error } = await supabase
-      .from('tickets')
-      .update({ rating, review, status: 'completed' })
-      .eq('id', ticketId);
-    return !error;
+    await db.tickets.update(ticketId, { rating, review, status: 'completed' });
+    return true;
   },
 
+  // إلغاء تذكرة وتغيير حالتها في النظام
   async cancelTicket(ticketId: string): Promise<boolean> {
     await delay(1000);
-    const { error } = await supabase
-      .from('tickets')
-      .update({ status: 'cancelled', payment_status: 'pending' })
-      .eq('id', ticketId);
-    return !error;
+    await db.tickets.update(ticketId, { status: 'cancelled', paymentStatus: 'pending' });
+    return true;
   },
 
+  // إسناد سائق لتذكرة فردية
   async assignDriverToTicket(ticketId: string, driverId: string, driverName: string, driverPhoto?: string): Promise<boolean> {
-    const { error } = await supabase
-      .from('tickets')
-      .update({ driver_id: driverId, driver_name: driverName, driver_photo: driverPhoto })
-      .eq('id', ticketId);
-    return !error;
+    await db.tickets.update(ticketId, { driverId, driverName, driverPhoto });
+    return true;
   },
 
+  // إسناد سائق لرحلة كاملة (جميع التذاكر التي تشترك في نفس المسار والوقت)
   async assignDriverToTrip(from: string, to: string, date: string, time: string, busType: string, driverId: string, driverName: string, driverPhoto?: string): Promise<boolean> {
-    const { error } = await supabase
-      .from('tickets')
-      .update({ driver_id: driverId, driver_name: driverName, driver_photo: driverPhoto })
-      .eq('from_loc', from)
-      .eq('to_loc', to)
-      .eq('date', date)
-      .eq('departure_time', time)
-      .eq('bus_type', busType);
+    const tickets = await db.tickets
+      .where({ from, to, date, departureTime: time, busType })
+      .toArray();
     
-    return !error;
+    for (const ticket of tickets) {
+      await db.tickets.update(ticket.id, { driverId, driverName, driverPhoto });
+    }
+    return true;
   },
 
+  // وظيفة للمطورين لرؤية كل البيانات
   async getAllData() {
-    const { data: users } = await supabase.from('app_users').select('*');
-    const { data: tickets } = await supabase.from('tickets').select('*');
-    const { data: complaints } = await supabase.from('complaints').select('*');
-    const { data: drivers } = await supabase.from('drivers').select('*');
-    return { users, tickets, complaints, drivers };
+    return {
+      users: await db.users.toArray(),
+      tickets: await db.tickets.toArray(),
+      complaints: await db.complaints.toArray(),
+      drivers: await db.drivers.toArray()
+    };
   }
 };
-

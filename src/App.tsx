@@ -5,6 +5,7 @@ import AdminAuthForm from './components/AdminAuthForm';
 import BookingFlow from './components/BookingFlow';
 import PastTrips from './components/PastTrips';
 import ComplaintsForm from './components/ComplaintsForm';
+import DatabaseExplorer from './components/DatabaseExplorer';
 import AdminDashboard from './components/AdminDashboard';
 import DriverAuthForm from './components/DriverAuthForm';
 import DriverDashboard from './components/DriverDashboard';
@@ -19,6 +20,7 @@ const App: React.FC = () => {
   const [tickets, setTickets] = useState<Ticket[]>([]); // قائمة التذاكر الخاصة بالمستخدم
   const [lastBookedTicketId, setLastBookedTicketId] = useState<string | null>(null); // معرف آخر تذكرة تم حجزها
   const [loading, setLoading] = useState(true); // حالة التحميل الابتدائية
+  const [isExplorerOpen, setIsExplorerOpen] = useState(false); // حالة فتح مستكشف البيانات
   const [logoClicks, setLogoClicks] = useState(0); // عداد الضغطات لفتح ميزة سرية
 
   // --- دالة تهيئة التطبيق عند التشغيل (Initialization) ---
@@ -101,10 +103,11 @@ const App: React.FC = () => {
     setTickets(updatedTickets);
   };
 
-  // ميزة المطور: عداد الضغطات (محجوزة للتحديثات القادمة)
+  // ميزة المطور: فتح مستكشف قاعدة البيانات بخمس ضغطات على الشعار
   const handleLogoClick = () => {
     const newCount = logoClicks + 1;
     if (newCount >= 5) {
+      setIsExplorerOpen(true);
       setLogoClicks(0);
     } else {
       setLogoClicks(newCount);
@@ -273,6 +276,9 @@ const App: React.FC = () => {
           </div>
         )}
       </main>
+
+      {/* مستكشف البيانات للمطورين */}
+      <DatabaseExplorer isOpen={isExplorerOpen} onClose={() => setIsExplorerOpen(false)} />
       
       {/* التذييل (Footer) */}
       <footer className="bg-blue-950 text-blue-400 py-10 text-center border-t border-blue-900 px-4 mt-auto">
